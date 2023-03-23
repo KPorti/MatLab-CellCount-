@@ -1,0 +1,214 @@
+% Derived from Guilhem's quickVerifyPlusSorting_V3.m, from DropMap Analyzer 4.023.
+% Nathan Aymerich
+
+% ! Launch tbhe DropMap application before running this script and keep it open, it calls some of the functions from within the app !
+
+% This script shows you a Verify & Sort with random droplets until you
+% have counted enough for the lambda value to stabilize.
+% You should display only the BF channel and your viability cell staining
+% channel if you have one, but ALL the time points (or at least 5-6 if you
+% have more). Otherwise you might miss a cell that would not be visible in
+% some of the time points.
+% You can use the digits from 0 to 4 to count the cells in each droplet, I
+% personally choose to assign a 0 to any droplets with 4 cells or more.
+
+% At each new droplet the script calculates a new lambda value from all theB. Heat maps showing the percentage secreting cells and the average secretion rates measured after 24-hour incubation for all cytokines and stimulants. Relative output was calculated as percentage secreting cells multiplied with the average secretion rate and is shown for all cytokines and stimulations.
+% droplets since the beginning of the counting process and adds it to a
+% list, increasing in precision as you count the cells in more droplets.
+% When the lambda value has stabilized sufficiently, it automatically
+% stops, outputs the final lambda value and saves the sorting data in your
+% Excel file. The stabilization criteria is that there should not be more
+% than 5% difference between the max and min lambda value from the last 100
+% iterations. The evolution of the lambda value is plotted at the end of
+% the process.
+% You can adjust the stabilization parameters below to find the right
+% balance between precision and how many droplets you have to look at, the
+% parameters here (100, 5%) are just a proposition, it gives a high
+% precision but it can take a while, from 300 to 700 droplets in the
+% samples I have tried.
+
+%% Parameters for lambda stabilization
+length_stabilization=100; % number of increments where lambda should have stabilized for the count to end
+percent_change=5; % change in % between max and min value in the last increments (number of increments determined by "length_stabilization")
+stab_factor=1+percent_change/100;
+%% check the positive image after analysis
+clear sorter
+[matFileName,xlsPathName,matStruct]=getMatFile;
+% Starts at 1st line!! (not like older script)
+% Needs 5 columns or comment several lines below
+s=matStruct.s;
+data=s.Data;
+if  ismember('DropIdx',data.Properties.VariableNames)
+    data.Index=data.DropIdx;
+else
+    if ismember('CellIdx',data.Properties.VariableNames) & sum(data.CellIdx)>0
+        data.Index=data.CellIdx;
+    else
+        s.Data.CellIdx=(1:size(s.CellData,1))';
+        data.Index=s.Data.CellIdx;
+    end
+end
+nChannels=s.Info.nChannels;
+titles=s.Info.ChannelNames;
+titles{end+1}='Last Time';
+nTiles=s.Info.nTiles;
+tileIdx=s.Data.TileIdx;
+tiles=s.Tiles;
+load('LUTs16bit.mat','LUTs');
+%% Choose LUTs
+luts=fieldnames(LUTs);
+
+nImages=s.Info.nImages;
+%1st column: index of droplets
+centers=data.Centroid;
+%4th column: if cell =1 if empty =0 (put a column of 0 if no cell detection)
+% Or comment the line
+nDrops=size(centers,1); %number of droplets
+
+%% visualise the images
+sorter(1)=0;
+%% import the centers position
+[xlsFileName,xlsPathName]=selectExcelFile;
+dropIdx=randperm(nDrops,1500)'; % generates random droplets indexes, set at 1500, this should be more than enough but you can increase/decrease it
+prompt = {'Channels','Time points','Padding'};
+dlgTitle = 'What to display?';
+dims = [1 50];
+definput = {num2str(1:s.Info.nChannels),num2str(unique([1 s.Info.nTime])),num2str(0)};
+answer1 = inputdlg(prompt,dlgTitle,dims,definput);
+channelsToDisplay=str2num(answer1{1});
+timepointsToDisplay=str2num(answer1{2});
+addPadding=str2num(answer1{3});
+nChannelVerif=length(channelsToDisplay);
+nTimeVerif=length(timepointsToDisplay);
+[fileName,fileExt,pathName] =selectSomeFile('*.czi;*.nd2;*.lif','Select experiment image file','Single');
+cd(pathName)
+pathToFile=[fileName{1} '.' fileExt{1}];
+verifImages=getVerifImages(s,dropIdx,channelsToDisplay,timepointsToDisplay,addPadding,pathToFile);
+disp('Verification & sorting started.');
+disp('Press 0, 1, 2, 3 or 4  to sort droplets. p to pause 5sec, backspace to get back & Escape to quit');
+nSubPlotsLines=nTimeVerif;
+ii=1;
+%% Loop
+lambdas=[];
+while ii<=length(dropIdx')
+    figure(1);
+    niceFigures(gcf,'FullScreen','Yes')
+    xlabel('hello')
+    nIm=nChannelVerif*nTimeVerif;
+    for tt=timepointsToDisplay
+        for cc=channelsToDisplay
+            image=verifImages{dropIdx(ii),cc,tt};
+            image2=imadjust(image);
+            subplot(nChannelVerif,nTimeVerif,find(timepointsToDisplay==tt)+(find(channelsToDisplay==cc)-1)*nTimeVerif)
+            imshow(image2,[])
+            title(titles{cc})
+            xlabel(['Index ' num2str(data.Index(dropIdx(ii)))])
+        end
+    end
+    if ii>1
+        supertitle(['Line ' num2str(ii) ' | (' num2str(sum(sorter==1)) '/' num2str(length(sorter)) ') | Lambda = ' num2str(lambdas(end))],'FontSize',14);
+    else
+        supertitle(['Line ' num2str(ii) ' | (' num2str(sum(sorter==1)) '/' num2str(length(sorter)) ')'],'FontSize',14);
+    end
+    if dropIdx(ii)~=data.Index(dropIdx(ii))
+        disp('Something wrong with indexing');
+    end
+    ii0=ii;
+    CH='';
+    k=0;
+    while ii==ii0
+        while k==0
+            drawnow;
+            k=waitforbuttonpress;
+        end
+        CH = get(gcf,'CurrentKey');
+
+        if strcmp(CH,'0') || strcmp(CH,'numpad0')
+            sorter(ii,1)=0;
+            disp('0')
+            ii=ii+1;
+        elseif strcmp(CH,'1') || strcmp(CH,'numpad1')
+            sorter(ii,1)=1;
+            disp('1')
+            ii=ii+1;
+        elseif strcmp(CH,'2') || strcmp(CH,'numpad2')
+            sorter(ii,1)=2;
+            disp('2')
+            ii=ii+1;
+        elseif strcmp(CH,'3') || strcmp(CH,'numpad3')
+            sorter(ii,1)=3;
+            disp('3')
+            ii=ii+1;
+        elseif strcmp(CH,'4') || strcmp(CH,'numpad4')
+            sorter(ii,1)=4;
+            disp('4')
+            ii=ii+1;
+        elseif strcmp(CH,'return') || strcmp(CH,'escape')
+            disp('Analysis Over.')
+            ii=10^9;
+            break
+        elseif strcmp(CH,'backspace')
+            ii=max(ii-1,1);
+            if ii>1
+                lambdas(end)=[];
+            else
+                lambdas=[];
+            end
+            disp('Backspace pressed');
+        end
+        if ii>ii0
+            lambdas=[lambdas;sum(sorter)/length(sorter)];
+            if length(sorter)>=length_stabilization
+                test=lambdas(end-(length_stabilization-1):end);
+                if max(test)<=stab_factor*min(test)
+                    disp('Lambda has stabilized')
+                    fprintf('Lambda=%.3f \n',lambdas(end))
+                    ii=10^9;
+                    break
+                end
+            end
+        end
+    end
+end
+%%
+fprintf('%i droplets sorted\n',length(sorter));
+plot(lambdas);
+xlabel('Droplet number')
+ylabel('Lambda')
+strDate1 = datestr(now,'mmdd_HHMM');
+sheetName = ['Lambda count ' strDate1];
+dataSorting=saveDataSort(dropIdx,sorter);
+closeExcel=questdlg('Close your Excel datasheet','CloseExcel','I have closed my Excel file','I do not wish to save the results','I have closed my Excel file');
+switch closeExcel
+    case 'I have closed my Excel file'
+        if isempty(data) == 0
+            try
+                cd(xlsPathName)
+                xlswrite(xlsFileName,table2array(dataSorting),sheetName);
+                xlswrite(xlsFileName,lambdas(end),sheetName,'C1');
+                fprintf('Datasheet added to %s.\n',xlsFileName);
+            catch ME
+                switch ME.identifier
+                    case 'MATLAB:xlswrite:LockedFile'
+                        warndlg('Well you did not close .xlsx file. No data saved.');
+                        warning('Excel file not closed. No data saved.');
+                        return
+                end
+            end
+
+        else
+            disp('No data to save');
+        end
+    case 'I do not wish to save the results'
+
+end
+
+
+function dataSorting=saveDataSort(index,sorter)
+dataSorting=table;
+dataSorting.Index=index(1:length(sorter),1);
+dataSorting.Sorter=sorter;
+save('sorting.mat','dataSorting')
+writetable(dataSorting,'sortingData.csv','Delimiter',';');
+disp('See sorting.mat & sortingData.csv in case of emergency.');
+end
